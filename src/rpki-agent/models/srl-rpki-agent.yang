@@ -1,0 +1,85 @@
+module srl-rpki-agent {
+
+    yang-version "1";
+
+    namespace "urn:srl_nokia/rpki";
+
+    prefix "srl_nokia-rpki";
+
+    import srl_nokia-common {
+        prefix srl_nokia-comm;
+    }
+    import srl_nokia-network-instance {
+        prefix srl_nokia-netinst;
+    }
+    import srl_nokia-extensions {
+        prefix srl_nokia-ext;
+    }
+
+    revision "2023-05-10" {
+        description "Initial revision";
+        reference "TBD";
+    }
+
+    grouping rpki-top {
+        description "Configure RPKI";
+
+        container rpki {
+            presence "Configure RPKI";
+            srl_nokia-ext:delivery-node-override true;
+            must "../../type != 'srl_nokia-netinst:mac-vrf'" {
+              error-message "RPKI configuration is not supported on network-instance of type mac-vrf";
+            }
+            // must "not(../bgp)" {
+            //  error-message "Either BGP or FRR can be configured for a network-instance, not both";
+            // }
+
+            leaf admin-state {
+                type srl_nokia-comm:admin-state;
+                default "enable";
+
+                must ". = 'disable' or /system/gnmi-server/unix-socket/admin-state = 'enable'" {
+                 error-message "This agent requires the gNMI Unix socket to be enabled";
+                }
+
+                description "Administratively enable or disable RPKI for this network instance";
+            }
+
+            leaf rpki-server {
+               type string;
+               default "rtr.rpki.cloudflare.com";
+               description "FQDN or IP address of RTR server";
+            }
+
+            leaf port {
+               type uint16;
+               default 8282;
+               description "TCP port to connect to RPKI server";
+            }
+
+            leaf network-instance {
+               type leafref {
+                 path "/srl_nokia-netinst:network-instance/srl_nokia-netinst:name";
+               }
+               default "mgmt";
+               description "Network instance to use for connecting to RPKI server";
+            }
+
+            container stats {
+              presence "Stats";
+              srl_nokia-ext:delivery-node-override true;
+              config false;
+
+              container routes {
+                leaf ipv4 { type srl_nokia-comm:zero-based-counter64; }
+                leaf ipv6 { type srl_nokia-comm:zero-based-counter64; }
+              }
+            }
+        }
+    }
+
+    augment "/srl_nokia-netinst:network-instance/srl_nokia-netinst:protocols" {
+        uses rpki-top;
+    }
+
+}
