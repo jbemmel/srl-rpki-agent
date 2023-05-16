@@ -1,2 +1,4 @@
 netns
 pyroute2
+grpcio
+protobuf

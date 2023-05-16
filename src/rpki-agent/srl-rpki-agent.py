@@ -22,12 +22,12 @@ from sdk_protos import sdk_service_pb2, sdk_service_pb2_grpc,config_service_pb2
 # To report state back
 import telemetry_service_pb2,telemetry_service_pb2_grpc
 
-from pygnmi.client import gNMIclient
+from pygnmi.client import gNMIclient, telemetryParser
 
 # pygnmi does not support multithreading, so we need to build it
-from pygnmi.spec.gnmi_pb2_grpc import gNMIStub
-from pygnmi.spec.gnmi_pb2 import SetRequest, Update, TypedValue
-from pygnmi.path_generator import gnmi_path_generator
+from pygnmi.spec.v080.gnmi_pb2_grpc import gNMIStub
+from pygnmi.spec.v080.gnmi_pb2 import SetRequest, Update, TypedValue
+from pygnmi.create_gnmi_path import gnmi_path_generator
 
 from logging.handlers import RotatingFileHandler
 
@@ -121,13 +121,6 @@ def GetSystemMAC():
 
 #
 # Runs as a separate thread
-#
-# Responsible for (re)starting FRR daemon(s) to update their config, and
-# monitoring ipdb for route updates.
-#
-# Multi-threading logic quickly gets complicated; simpler to restart the
-# daemon each time an interface is added/removed, rather than call vtysh with
-# dynamic updates
 #
 from threading import Thread, Event
 class MonitoringThread(Thread):
@@ -232,6 +225,49 @@ class MonitoringThread(Thread):
       logging.info( f"MonitoringThread exit: {self.net_inst}" )
       del ni['monitor_thread']
 
+# Upon changes in route counts, check for RPKI changes
+class RouteMonitoringThread(Thread):
+   def __init__(self,state):
+       Thread.__init__(self)
+       self.state = state
+
+   def run(self):
+    logging.info( "RouteMonitoringThread run()" )
+
+    # Really inefficient, but ipv4 route events don't work? except via gRibi
+    # path = '/network-instance[name=default]/protocols/bgp/evpn'
+    path = '/network-instance[name=default]/route-table/ipv4-unicast/route[route-owner=bgp_mgr]'
+
+    subscribe = {
+      'subscription': [
+          {
+              'path': path,
+              'mode': 'on_change'
+          }
+      ],
+      'use_aliases': False,
+      # 'updates_only': True, # Optional
+      'mode': 'stream',
+      'encoding': 'json'
+    }
+    with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server',57400),
+                          username="admin",password="NokiaSrl1!",
+                          insecure=True, debug=False) as c:
+      telemetry_stream = c.subscribe(subscribe=subscribe)
+      try:
+       for m in telemetry_stream:
+         if m.HasField('update'): # both update and delete events
+            # Filter out only toplevel events
+            parsed = telemetryParser(m)
+            logging.info(f"RouteMonitoringThread gNMI change event :: {parsed}")
+            update = parsed['update']
+            if update['update']:
+                logging.info( f"RouteMonitoringThread: {update['update']}")
+                # Assume routes changed, get attributes.
+      except Exception as ex:
+       logging.error(ex)
+      logging.info("Leaving gNMI subscribe loop - closing gNMI connection")
+
 ##################################################################
 ## Updates configuration state based on 'config' notifications
 ## May calls vtysh to update an interface
@@ -332,6 +368,8 @@ def UpdateDaemons( state, modified_netinstances ):
          if 'monitor_thread' not in ni:
             ni['monitor_thread'] = MonitoringThread( state, n )
             ni['monitor_thread'].start()
+
+            RouteMonitoringThread(state).start() # Test
          else:
             logging.info( f"MonitorThread already running, poke it?" )
             # ni['monitor_thread'].CheckForUpdatedInterfaces()
