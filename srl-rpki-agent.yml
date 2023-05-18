@@ -3,6 +3,7 @@ srl_rpki_agent:
  path: /opt/demo-agents/rpki-agent
  launch-command: sudo /opt/demo-agents/rpki-agent/scripts/srl-rpki-agent.sh
  search-command: python3 /opt/demo-agents/rpki-agent/srl-rpki-agent.py
+ start-order: 999 # default 200
  wait-for-config: Yes
  failure-threshold: 3
  failure-action: wait=forever

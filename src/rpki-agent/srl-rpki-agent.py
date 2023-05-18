@@ -132,55 +132,13 @@ class MonitoringThread(Thread):
        self.net_inst = net_inst
 
        # Wait for gNMI to connect
-       while True:
-         try:
-           grpc.channel_ready_future(gnmi_channel).result(timeout=5)
-           logging.info( "gRPC unix socket connected" )
-           break
-         except grpc.FutureTimeoutError:
-           logging.warning( "gRPC timeout, continue waiting 5s..." )
-
-   def gNMI_Set( self, updates ):
-      #with gNMIclient(target=('unix:///opt/srlinux/var/run/sr_gnmi_server',57400),
-      #                       username="admin",password="admin",
-      #                       insecure=True, debug=True) as gnmic:
-      #  logging.info( f"Sending gNMI SET: {path} {config} {gnmic}" )
-      update_msg = []
-      for path,data in updates:
-        u_path = gnmi_path_generator( path )
-        u_val = bytes( json.dumps(data), 'utf-8' )
-        update_msg.append(Update(path=u_path, val=TypedValue(json_ietf_val=u_val)))
-      update_request = SetRequest( update=update_msg )
-      try:
-            # Leaving out 'metadata' does return an error, so the call goes through
-            # It just doesn't show up in CLI (cached), logout+login fixes it
-            res = self.gnmi_stub.Set( update_request, metadata=gnmi_options )
-            logging.info( f"After gnmi.Set {updates}: {res}" )
-            return res
-      except grpc._channel._InactiveRpcError as err:
-            logging.error(err)
-            # May happen during system startup, retry once
-            if err.code() == grpc.StatusCode.FAILED_PRECONDITION:
-                logging.info("Exception during startup? Retry in 5s...")
-                time.sleep( 5 )
-                res = self.gnmi_stub.Set( update_request, metadata=gnmi_options )
-                logging.info(f"OK, success? {res}")
-                return res
-            raise err
-
-   #
-   # Configure 'linux' protocol in given namespace, to import FRR routes
-   # - no ECMP
-   # - IPv4 next hops are invalid, only works for IPv6
-   #
-   def ConfigureLinuxRouteImport( self ):
-       path = f"/network-instance[name={self.net_inst}]/protocols/linux"
-       return self.gNMI_Set( updates=[(path,{ 'import-routes' : True })] )
-
-   def ConfigureIPv4UsingIPv6Nexthops( self ):
-       path = f"/network-instance[name={self.net_inst}]/ip-forwarding"
-       return self.gNMI_Set( updates=[(path,{ 'receive-ipv4-check': False } )] )
-
+       # while True:
+       #   try:
+       #     grpc.channel_ready_future(gnmi_channel).result(timeout=5)
+       #     logging.info( "gRPC unix socket connected" )
+       #     break
+       #   except grpc.FutureTimeoutError:
+       #     logging.warning( "gRPC timeout, continue waiting 5s..." )
 
    #
    # Called by another thread to wake up this one
@@ -200,23 +158,23 @@ class MonitoringThread(Thread):
         cfg = ni['config']
 
         # Create per-thread gNMI stub, using a global channel
-        self.gnmi_stub = gNMIStub( gnmi_channel )
-
-        # Create Prefix manager, this starts listening to netlink route events
-        from prefix_mgr import PrefixManager # pylint: disable=import-error
-        self.prefix_mgr = PrefixManager( self.net_inst, channel, metadata, cfg )
+        # self.gnmi_stub = gNMIStub( gnmi_channel )
 
         netns_name = f"srbase-{cfg['rpki_ni']}"
         while not os.path.exists(f'/var/run/netns/{netns_name}'):
             logging.info(f"Waiting for {netns_name} netns to be created...")
             time.sleep(2) # 1 second is not enough
-        with netns.NetNS(nsname=netns_name):
-            self.rtr_client = RTRClient(host=cfg['rpki_server'], port=cfg['rpki_port'], dump=False, debug=True)
+        # with netns.NetNS(nsname=netns_name):
+        self.rtr_client = RTRClient(dump=False, debug=True)
 
-        while True: # Keep waiting for route events
-          self.event.wait(timeout=None)
-          logging.info( f"MonitoringThread received event" )
-          self.event.clear() # Reset for next iteration
+        # Does not return
+        logging.info( f"Connecting to RTR server {cfg['rpki_server']}:{cfg['rpki_port']} in netns {netns_name}" )
+        self.rtr_client.connect(host=cfg['rpki_server'], port=cfg['rpki_port'], namespace=netns_name)
+
+        # while True: # Keep waiting for route events
+        #   self.event.wait(timeout=10.0)
+        #   logging.info( f"MonitoringThread received event or 10s timeout expired" )
+        #   self.event.clear() # Reset for next iteration
 
       except Exception as e:
          traceback_str = ''.join(traceback.format_tb(e.__traceback__))
@@ -236,7 +194,7 @@ class RouteMonitoringThread(Thread):
 
     # Really inefficient, but ipv4 route events don't work? except via gRibi
     # path = '/network-instance[name=default]/protocols/bgp/evpn'
-    path = '/network-instance[name=default]/route-table/ipv4-unicast/route[route-owner=bgp_mgr]'
+    path = '/network-instance[name=default]/route-table/ipv4-unicast/route[route-owner=bgp_mgr]/active'
 
     subscribe = {
       'subscription': [

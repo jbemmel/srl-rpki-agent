@@ -14,6 +14,7 @@ FROM quay.io/centos/centos:stream8 AS custom-build
 RUN yum install -y python3 gcc git python3-devel && cd /tmp && \
     git clone https://github.com/jbemmel/rpki-rtr-client && \
     cd rpki-rtr-client && \
+    pip3 install pytricia && \
     PYTHONDONTWRITEBYTECODE=1 python3 setup.py install
 
 # Install pygnmi in separate image too, needs build tools and upgraded pip
@@ -21,7 +22,7 @@ RUN yum install -y python3 gcc git python3-devel && cd /tmp && \
 
 FROM target AS final
 COPY --from=custom-build /tmp/rpki-rtr-client*  $VIRTUAL_ENV/lib/python3.6/site-packages/
-# COPY --from=custom-build /usr/local/lib/python3.6/site-packages/pygnmi $VIRTUAL_ENV/lib/python3.6/site-packages/
+COPY --from=custom-build /usr/local/lib64/python3.6/site-packages/pytricia* $VIRTUAL_ENV/lib/python3.6/site-packages/
 # COPY --from=custom-build /usr/local/lib/python3.6/site-packages $VIRTUAL_ENV/lib/python3.6/
 
 # NDB replaces ipdb
