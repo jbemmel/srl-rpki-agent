@@ -12,7 +12,7 @@ import json
 import signal
 import traceback
 import subprocess
-import netns
+import re
 
 # sys.path.append('/usr/lib/python3.6/site-packages/sdk_protos')
 from sdk_protos import sdk_service_pb2, sdk_service_pb2_grpc,config_service_pb2
@@ -123,7 +123,7 @@ def GetSystemMAC():
 # Runs as a separate thread
 #
 from threading import Thread, Event
-class MonitoringThread(Thread):
+class RPKIThread(Thread):
    def __init__(self, state, net_inst):
        Thread.__init__(self)
        self.daemon = True # Mark thread as a daemon thread
@@ -152,7 +152,7 @@ class MonitoringThread(Thread):
          self.event.set()
 
    def run(self):
-      logging.info( f"MonitoringThread run(): {self.net_inst}")
+      logging.info( f"RPKIThread run(): {self.net_inst}")
       ni = self.state.network_instances[ self.net_inst ]
       try:
         cfg = ni['config']
@@ -165,11 +165,12 @@ class MonitoringThread(Thread):
             logging.info(f"Waiting for {netns_name} netns to be created...")
             time.sleep(2) # 1 second is not enough
         # with netns.NetNS(nsname=netns_name):
-        self.rtr_client = RTRClient(dump=False, debug=True)
+        self.rtr_client = RTRClient(dump=False, debug=1)
 
         # Does not return
         logging.info( f"Connecting to RTR server {cfg['rpki_server']}:{cfg['rpki_port']} in netns {netns_name}" )
         self.rtr_client.connect(host=cfg['rpki_server'], port=cfg['rpki_port'], namespace=netns_name)
+        logging.info( f"RPKIThread connected to RTR server" )
 
         # while True: # Keep waiting for route events
         #   self.event.wait(timeout=10.0)
@@ -178,30 +179,32 @@ class MonitoringThread(Thread):
 
       except Exception as e:
          traceback_str = ''.join(traceback.format_tb(e.__traceback__))
-         logging.error( f"MonitoringThread error: {e} trace={traceback_str}" )
+         logging.error( f"RPKIThread error: {e} trace={traceback_str}" )
 
-      logging.info( f"MonitoringThread exit: {self.net_inst}" )
-      del ni['monitor_thread']
+      logging.info( f"RPKIThread exit: {self.net_inst}" )
+      del ni['rpki_thread']
+
+   def lookup_prefix(self,cidr):
+      return self.rtr_client.get_session().lookup_prefix(cidr)
 
 # Upon changes in route counts, check for RPKI changes
 class RouteMonitoringThread(Thread):
-   def __init__(self,state):
+   def __init__(self,rpki_thread):
        Thread.__init__(self)
-       self.state = state
+       self.rpki_thread = rpki_thread
 
    def run(self):
     logging.info( "RouteMonitoringThread run()" )
 
-    # Really inefficient, but ipv4 route events don't work? except via gRibi
-    # path = '/network-instance[name=default]/protocols/bgp/evpn'
-    path = '/network-instance[name=default]/route-table/ipv4-unicast/route[route-owner=bgp_mgr]/active'
+    # Subscribe to changes in 'active' state for IPv4/v6 prefixes
+    regex = re.compile( r".*\[ipv(4|6)-prefix=([^\]]+)\].*" )
 
     subscribe = {
       'subscription': [
           {
-              'path': path,
+              'path': f'/network-instance[name=default]/route-table/{v}-unicast/route[route-owner=bgp_mgr]/active',
               'mode': 'on_change'
-          }
+          } for v in ['ipv4', 'ipv6']
       ],
       'use_aliases': False,
       # 'updates_only': True, # Optional
@@ -222,6 +225,14 @@ class RouteMonitoringThread(Thread):
             if update['update']:
                 logging.info( f"RouteMonitoringThread: {update['update']}")
                 # Assume routes changed, get attributes.
+                for u in update['update']:
+                   if bool( u['val'] ): # Route active?
+                      path = u['path']
+                      m = regex.match(path)
+                      if m:
+                        rpki = self.rpki_thread.lookup_prefix(m[2])
+                        logging.info( f"IP prefix: {m[2]} RPKI={rpki}" )
+                      
       except Exception as ex:
        logging.error(ex)
       logging.info("Leaving gNMI subscribe loop - closing gNMI connection")
@@ -321,18 +332,18 @@ class State(object):
 def UpdateDaemons( state, modified_netinstances ):
     for n in modified_netinstances:
        ni = state.network_instances[ n ]
-       # Shouldn't run more than one monitoringthread
+       # Shouldn't run more than one thread
        if 'config' in ni:
-         if 'monitor_thread' not in ni:
-            ni['monitor_thread'] = MonitoringThread( state, n )
-            ni['monitor_thread'].start()
+         if 'rpki_thread' not in ni:
+            rpki_thread = ni['rpki_thread'] = RPKIThread( state, n )
+            rpki_thread.start()
 
-            RouteMonitoringThread(state).start() # Test
+            RouteMonitoringThread(rpki_thread).start() # gRPC monitoring
          else:
-            logging.info( f"MonitorThread already running, poke it?" )
+            logging.info( f"RPKIThread already running, poke it?" )
             # ni['monitor_thread'].CheckForUpdatedInterfaces()
        else:
-           logging.warning( "Incomplete config, not starting MonitoringThread" )
+           logging.warning( "Incomplete config, not starting RPKIThread" )
 
 ##################################################################################################
 ## This is the main proc where all processing for FRR agent starts.
