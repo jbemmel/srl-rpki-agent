@@ -197,7 +197,7 @@ class RouteMonitoringThread(Thread):
       """ Adds the given prefix to a list representing validated RPKI prefixes """
       gnmi.set( encoding='json_ietf', update=[
         ( f'/routing-policy/prefix-set[name=rpki-validated-{asn}]',
-          { 'prefix': [{ "ip-prefix": prefix, "mask-length-range": "exact" }, ] }
+          { 'prefix': [{ "ip-prefix": prefix, "mask-length-range": "exact" }] }
         )
       ])
 
