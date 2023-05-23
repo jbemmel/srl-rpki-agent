@@ -165,7 +165,7 @@ class RPKIThread(Thread):
             logging.info(f"Waiting for {netns_name} netns to be created...")
             time.sleep(2) # 1 second is not enough
         # with netns.NetNS(nsname=netns_name):
-        self.rtr_client = RTRClient(dump=False, debug=1)
+        self.rtr_client = RTRClient(dump=False, debug=0)
 
         # Does not return
         logging.info( f"Connecting to RTR server {cfg['rpki_server']}:{cfg['rpki_port']} in netns {netns_name}" )
@@ -193,6 +193,41 @@ class RouteMonitoringThread(Thread):
        Thread.__init__(self)
        self.rpki_thread = rpki_thread
 
+   def add_rpki_prefix(self,prefix,asn,gnmi):
+      """ Adds the given prefix to a list representing validated RPKI prefixes """
+      gnmi.set( encoding='json_ietf', update=[
+        {
+           'path': f'/routing-policy/prefix-set[name=rpki-validated-{asn}]',
+           'val': {
+            "ip-prefix": prefix,
+            "mask-length-range": "exact"
+           },
+        } 
+      ])
+
+   def process_prefix(self,ip_version,prefix,gnmi):
+      """ Logic to process gNMI on_change event for a given prefix """
+
+      rpki = self.rpki_thread.lookup_prefix(prefix)
+      logging.info( f"IP prefix: {prefix} RPKI={rpki}" )
+
+      # Lookup BGP attr ID for AS path
+      p = f"/network-instance[name=default]/bgp-rib/afi-safi[afi-safi-name=ipv{ip_version}-unicast]/ipv{ip_version}-unicast/local-rib/routes[prefix={prefix}]"
+      data = gnmi.get(path=[p], encoding='json_ietf')
+
+      # Assume this is a single return value
+      base = data['notification'][0]['update'][0]['val']['routes'][0]
+      logging.info( f"BGP attr id: {base['attr-id']} neighbor AS {base['neighbor-as']} neighbor {base['neighbor']}" )
+
+      # TODO use attr-id to lookup /network-instance default bgp-rib attr-sets attr-set {attr-id} for full as-path
+
+      # If AS is a valid origin according to RPKI, add prefix to list of validated prefixes
+      if rpki and base['neighbor-as'] in rpki:
+         logging.info( "Neighbor AS origin validated by RPKI, adding prefix..." )
+         self.add_rpki_prefix(prefix,base['neighbor-as'],gnmi)
+
+         # TODO apply policy to target neighbor based on the rpki-validated-{asn} prefix list
+
    def run(self):
     logging.info( "RouteMonitoringThread run()" )
 
@@ -202,9 +237,11 @@ class RouteMonitoringThread(Thread):
     subscribe = {
       'subscription': [
           {
-              'path': f'/network-instance[name=default]/route-table/{v}-unicast/route[route-owner=bgp_mgr]/active',
-              'mode': 'on_change'
-          } for v in ['ipv4', 'ipv6']
+             # Cannot do 'path': f'/network-instance[name=default]/bgp-rib/afi-safi[afi-safi-name={v}-unicast]/{v}-unicast/rib-in-out/rib-in-pre',
+             'path': f'/network-instance[name=default]/route-table/{v}-unicast/route[route-owner=bgp_mgr]/active',
+             # 'path': f'/network-instance[name=default]/bgp-rib/afi-safi[afi-safi-name={v}-unicast]/{v}-unicast/local-rib/routes',
+             'mode': 'on_change'
+          } for v in ["ipv4","ipv6"]
       ],
       'use_aliases': False,
       # 'updates_only': True, # Optional
@@ -230,8 +267,7 @@ class RouteMonitoringThread(Thread):
                       path = u['path']
                       m = regex.match(path)
                       if m:
-                        rpki = self.rpki_thread.lookup_prefix(m[2])
-                        logging.info( f"IP prefix: {m[2]} RPKI={rpki}" )
+                         self.process_prefix(m[1],m[2],c)
                       
       except Exception as ex:
        logging.error(ex)
@@ -261,17 +297,6 @@ def Handle_Notification(obj, state):
           return json.loads(json_acceptable_string)
 
         ni = state.network_instances[ net_inst ] if net_inst in state.network_instances else { 'config': {} }
-
-        def update_conf(category,key,value,restart_frr=False):
-           if 'config' not in ni:
-               ni['config'] = {}
-           cfg = ni['config']
-           if category in cfg:
-               cfg[category].update( { key: value } )
-           else:
-               cfg[category] = { key: value }
-           if restart_frr and 'frr' in ni:
-               ni.update( { 'frr' : 'restart' } )
 
         base_path = ".network_instance.protocols.rpki"
         if obj.config.key.js_path == base_path:
