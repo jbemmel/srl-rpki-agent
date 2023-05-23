@@ -196,13 +196,9 @@ class RouteMonitoringThread(Thread):
    def add_rpki_prefix(self,prefix,asn,gnmi):
       """ Adds the given prefix to a list representing validated RPKI prefixes """
       gnmi.set( encoding='json_ietf', update=[
-        {
-           'path': f'/routing-policy/prefix-set[name=rpki-validated-{asn}]',
-           'val': {
-            "ip-prefix": prefix,
-            "mask-length-range": "exact"
-           },
-        } 
+        ( f'/routing-policy/prefix-set[name=rpki-validated-{asn}]',
+          { 'prefix': [{ "ip-prefix": prefix, "mask-length-range": "exact" }, ] }
+        )
       ])
 
    def process_prefix(self,ip_version,prefix,gnmi):
@@ -229,7 +225,9 @@ class RouteMonitoringThread(Thread):
          # TODO apply policy to target neighbor based on the rpki-validated-{asn} prefix list
 
    def run(self):
-    logging.info( "RouteMonitoringThread run()" )
+    logging.info( "RouteMonitoringThread run(), wait 30 secs for RPKI to finish sync..." )
+
+    time.sleep( 30.0 )
 
     # Subscribe to changes in 'active' state for IPv4/v6 prefixes
     regex = re.compile( r".*\[ipv(4|6)-prefix=([^\]]+)\].*" )
