@@ -32,3 +32,7 @@ build-srlinux: do-build
 # build-auto-frr: BASEIMG=srl/auto-config-v2
 # build-auto-frr:	NAME=srl/auto-frr-demo
 # build-auto-frr: do-build
+
+venv: ## Creates a .venv with dependencies, fully self contained
+	python3.6 -m venv src/rpki-agent/.venv
+	. src/rpki-agent/.venv/bin/activate && python3 -m pip install --upgrade -r requirements.txt

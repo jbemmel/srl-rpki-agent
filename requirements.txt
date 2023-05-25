@@ -1,4 +1,5 @@
 netns
 pyroute2
-grpcio
+grpcio # includes grpc
 protobuf
+pygnmi
