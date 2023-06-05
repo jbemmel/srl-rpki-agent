@@ -193,8 +193,9 @@ class RouteMonitoringThread(Thread):
        Thread.__init__(self)
        self.rpki_thread = rpki_thread
 
-   def add_rpki_prefix(self,prefix,asn,gnmi):
+   def add_rpki_prefix(self,prefix,maxlen,asn,gnmi):
       """ Adds the given prefix to a list representing validated RPKI prefixes """
+      # Note: 'maxlen' not yet used
       gnmi.set( encoding='json_ietf', update=[
         ( f'/routing-policy/prefix-set[name=rpki-validated-{asn}]',
           { 'prefix': [{ "ip-prefix": prefix, "mask-length-range": "exact" }] }
@@ -204,8 +205,8 @@ class RouteMonitoringThread(Thread):
    def process_prefix(self,ip_version,prefix,gnmi):
       """ Logic to process gNMI on_change event for a given prefix """
 
-      rpki = self.rpki_thread.lookup_prefix(prefix)
-      logging.info( f"IP prefix: {prefix} RPKI={rpki}" )
+      (maxlen, aslist) = self.rpki_thread.lookup_prefix(prefix)
+      logging.info( f"IP prefix: {prefix} maxlen={maxlen} AS list={aslist}" )
 
       # Lookup BGP attr ID for AS path
       p = f"/network-instance[name=default]/bgp-rib/afi-safi[afi-safi-name=ipv{ip_version}-unicast]/ipv{ip_version}-unicast/local-rib/routes[prefix={prefix}]"
@@ -218,9 +219,9 @@ class RouteMonitoringThread(Thread):
       # TODO use attr-id to lookup /network-instance default bgp-rib attr-sets attr-set {attr-id} for full as-path
 
       # If AS is a valid origin according to RPKI, add prefix to list of validated prefixes
-      if rpki and base['neighbor-as'] in rpki:
+      if base['neighbor-as'] in aslist:
          logging.info( "Neighbor AS origin validated by RPKI, adding prefix..." )
-         self.add_rpki_prefix(prefix,base['neighbor-as'],gnmi)
+         self.add_rpki_prefix(prefix,maxlen,base['neighbor-as'],gnmi)
 
          # TODO apply policy to target neighbor based on the rpki-validated-{asn} prefix list
 
