@@ -7,11 +7,9 @@ import time
 import sys
 import logging
 import os
-import ipaddress
 import json
 import signal
 import traceback
-import subprocess
 import re
 
 # sys.path.append('/usr/lib/python3.6/site-packages/sdk_protos')
@@ -23,11 +21,6 @@ from sdk_protos import sdk_service_pb2, sdk_service_pb2_grpc,config_service_pb2
 import telemetry_service_pb2,telemetry_service_pb2_grpc
 
 from pygnmi.client import gNMIclient, telemetryParser
-
-# pygnmi does not support multithreading, so we need to build it
-from pygnmi.spec.v080.gnmi_pb2_grpc import gNMIStub
-from pygnmi.spec.v080.gnmi_pb2 import SetRequest, Update, TypedValue
-from pygnmi.create_gnmi_path import gnmi_path_generator
 
 from logging.handlers import RotatingFileHandler
 
