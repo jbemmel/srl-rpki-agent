@@ -11,6 +11,7 @@ import json
 import signal
 import traceback
 import re
+import ipaddress
 
 # sys.path.append('/usr/lib/python3.6/site-packages/sdk_protos')
 from sdk_protos import sdk_service_pb2, sdk_service_pb2_grpc,config_service_pb2
@@ -195,11 +196,20 @@ class RouteMonitoringThread(Thread):
         )
       ])
 
+   def add_acl_prefix(self,ip_version,prefix,asn,gnmi):
+      """ Adds the given prefix to an ACL to count matching packets """
+      seq = int(ipaddress.ip_address(prefix)) % 65533 + 1
+      gnmi.set( encoding='json_ietf', update=[
+        ( f'/acl/ipv{ip_version}-filter[name=prefix-count-{asn}]',
+          { 'statistics-per-entry': True, 'entry': [
+             { "sequence-id": seq, "match": { "destination-ip" : { "prefix": prefix } }, "action": { "accept": { } } },
+             { "sequence-id": 65535, "action": { "accept": { } } }
+            ] }
+        )
+      ])
+
    def process_prefix(self,ip_version,prefix,gnmi):
       """ Logic to process gNMI on_change event for a given prefix """
-
-      (maxlen, aslist) = self.rpki_thread.lookup_prefix(prefix)
-      logging.info( f"IP prefix: {prefix} maxlen={maxlen} AS list={aslist}" )
 
       # Lookup BGP attr ID for AS path
       p = f"/network-instance[name=default]/bgp-rib/afi-safi[afi-safi-name=ipv{ip_version}-unicast]/ipv{ip_version}-unicast/local-rib/routes[prefix={prefix}]"
@@ -211,7 +221,11 @@ class RouteMonitoringThread(Thread):
 
       # TODO use attr-id to lookup /network-instance default bgp-rib attr-sets attr-set {attr-id} for full as-path
 
+      self.add_acl_prefix(ip_version,prefix,base['neighbor-as'],gnmi)
+
       # If AS is a valid origin according to RPKI, add prefix to list of validated prefixes
+      (maxlen, aslist) = self.rpki_thread.lookup_prefix(prefix)
+      logging.info( f"IP prefix: {prefix} maxlen={maxlen} AS list={aslist}" )
       if base['neighbor-as'] in aslist:
          logging.info( "Neighbor AS origin validated by RPKI, adding prefix..." )
          self.add_rpki_prefix(prefix,maxlen,base['neighbor-as'],gnmi)
